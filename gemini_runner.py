@@ -7,21 +7,22 @@
 # ]
 # ///
 
+import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from dotenv import load_dotenv
-from google import genai
-from enum import StrEnum
-import typer
-from google.genai import types
+from typing import Annotated
 
-INPUT_MAX_LENGTH = 512
+import typer
+from dotenv import load_dotenv
+from google.genai import Client, types
 
 env_path = Path.home() / ".config" / "gemini" / ".env"
 load_dotenv(env_path)
 
 GOOGLE_GEMINI_API_TOKEN = os.getenv("GOOGLE_GEMINI_API_TOKEN", "")
+INPUT_MAX_LENGTH = 512
 
 
 class InputValidationException(Exception):
@@ -29,72 +30,83 @@ class InputValidationException(Exception):
         super().__init__(f"Exception: {message}")
 
 
-class Commands(StrEnum):
-    CODE = "translate_code"
-    TEXT = "translate_text"
+class GeminiCommandNotFoundException(Exception):
+    def __init__(self, command: str) -> None:
+        super().__init__(f"Exception: Command '{command}' not found.")
 
 
-TRANSLATE_TEXT_SYSTEM_INSTRUCTION = """
-    You are a translation assistant. I will paste text related to an Italian
-    car insurance company.
-    Your job is to translate it into clear, natural English suitable for 
-    professional or customer-facing contexts.
+@dataclass
+class GeminiCommand:
+    command: str
+    model: str
+    system_instructions: str
 
-    Preserve the original tone and intent (e.g., legal, commercial, or 
-    customer support)
-
-    Use fluent, idiomatic English
-
-    Assume all content is within the context of car insurance in Italy
-
-    Output only the translated version — no explanations unless I ask
-"""
-
-TRANSLATE_CODE_SYSTEM_INSTRUCTION = """
-    You are a translation assistant. 
-    I will paste code related to an Italian car insurance system.
-    Your job is to translate it into clear, natural English.
-
-    Only translate human-readable elements: comments, string literals,
-    and (if appropriate) variable names
-
-    Preserve code formatting, syntax, and structure exactly
-
-    Assume all content is within the context of car insurance in Italy
-
-    Output only the translated version — no explanations unless I ask
-"""
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "command": self.command,
+            "model": self.model,
+            "system_instructions": self.system_instructions,
+        }
 
 
 class GeminiClient:
-    def __init__(
-        self, api_key: str, model: str, client: genai.Client | None = None
-    ) -> None:
+    def __init__(self, api_key: str, client: Client | None = None) -> None:
         self._api_key: str = api_key
-        self._model: str = model
-        self._client = client or genai.Client(api_key=self._api_key)
-        self._command_instructions: dict[str, str] = {}
+        self._client: Client | None = client
+        self._commands: dict[str, GeminiCommand] = {}
+        self._config_path = Path(__file__).parent / "config.json"
+        self._default_model: str = "gemini-2.0-flash"
 
-    def register_command(self, command: str, instructions: str) -> None:
-        self._command_instructions[command] = instructions
+    def _get_client(self) -> Client:
+        """Lazy load client."""
+        if not self._client:
+            self._client = Client(api_key=self._api_key)
+        return self._client
+
+    def load_commands(self) -> None:
+        if not self._config_path.is_file():
+            return
+
+        with open(self._config_path) as f:
+            config = json.load(f)
+        for gemini_command in config:
+            self.register_command(
+                command=gemini_command["command"],
+                model=gemini_command.get("model"),
+                system_instructions=gemini_command.get("system_instructions"),
+            )
+
+    def save_commands(self) -> None:
+        with open(self._config_path, "w") as f:
+            json.dump(self.list_commands(), f)
+
+    def register_command(
+        self, command: str, model: str | None, system_instructions: str | None
+    ) -> None:
+        self._commands[command] = GeminiCommand(
+            command=command,
+            model=model or self._default_model,
+            system_instructions=system_instructions or "",
+        )
+
+    def list_commands(self) -> list[dict[str, str]]:
+        return [command.to_dict() for command in self._commands.values()]
 
     def generate(self, command: str, content: str) -> str | None:
-        response = self._client.models.generate_content(
-            model=self._model,
+        gemini_command = self._commands.get(command)
+        if not gemini_command:
+            raise GeminiCommandNotFoundException(command=command)
+
+        client = self._get_client()
+
+        response = client.models.generate_content(
+            model=gemini_command.model,
             config=types.GenerateContentConfig(
-                system_instruction=self._command_instructions.get(command, "")
+                system_instruction=gemini_command.system_instructions
             ),
             contents=content,
         )
         return response.text
-
-
-app = typer.Typer()
-client = GeminiClient(
-    api_key=GOOGLE_GEMINI_API_TOKEN, model="gemini-2.0-flash"
-)
-client.register_command(Commands.CODE, TRANSLATE_CODE_SYSTEM_INSTRUCTION)
-client.register_command(Commands.TEXT, TRANSLATE_TEXT_SYSTEM_INSTRUCTION)
 
 
 def read_input() -> str:
@@ -112,32 +124,40 @@ def read_input() -> str:
     raise InputValidationException("No input provided.")
 
 
+app = typer.Typer()
+client = GeminiClient(api_key=GOOGLE_GEMINI_API_TOKEN)
+client.load_commands()
+
+
 @app.command()
-def translate_code(
-    content: str = typer.Argument(
-        None,
-        help="Content to translate. If not provided, will read from stdin.",
-    ),
-) -> None:
+def run(command: str, content: str) -> None:
     if content is None:
         content = read_input()
 
-    result = client.generate(command=Commands.CODE, content=content)
+    result = client.generate(command=command, content=content)
     print(result)
 
 
 @app.command()
-def translate_text(
-    content: str = typer.Argument(
-        None,
-        help="Content to translate. If not provided, will read from stdin.",
-    ),
+def register(
+    command: str,
+    model: str | None = None,
+    instructions: str | None = None,
 ) -> None:
-    if content is None:
-        content = read_input()
+    client.register_command(
+        command=command, model=model, system_instructions=instructions
+    )
+    client.save_commands()
 
-    result = client.generate(command=Commands.TEXT, content=content)
-    print(result)
+
+@app.command()
+def commands(verbose: Annotated[bool, typer.Option()] = False) -> None:
+    commands = client.list_commands()
+    if verbose:
+        print(json.dumps(commands, indent=4))
+    else:
+        command_names = [command["command"] for command in commands]
+        print(json.dumps(command_names, indent=4))
 
 
 if __name__ == "__main__":

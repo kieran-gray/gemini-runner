@@ -2,11 +2,11 @@
 		lint 
 
 format:
-	uv run ruff format gem_runner.py
-	uv run ruff check gem_runner.py --fix
+	uv run ruff format .
+	uv run ruff check . --fix
 
 lint:
 	uv lock --check
-	uv run mypy gem_runner.py
-	uv run ruff check gem_runner.py
-	uv run ruff format gem_runner.py --check
+	uv run mypy .
+	uv run ruff check .
+	uv run ruff format . --check
