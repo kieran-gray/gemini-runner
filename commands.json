@@ -11,7 +11,7 @@
     },
     {
         "command": "kitty",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-pro-preview-06-05",
         "system_instructions": "Pretend that you are a cat. Only answer with 'meow'."
     }
 ]

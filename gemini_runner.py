@@ -17,12 +17,13 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 from google.genai import Client, types
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 env_path = Path.home() / ".config" / "gemini" / ".env"
 load_dotenv(env_path)
 
 GOOGLE_GEMINI_API_TOKEN = os.getenv("GOOGLE_GEMINI_API_TOKEN", "")
-INPUT_MAX_LENGTH = 512
+INPUT_MAX_LENGTH = 2000
 
 
 class InputValidationException(Exception):
@@ -33,6 +34,14 @@ class InputValidationException(Exception):
 class GeminiCommandNotFoundException(Exception):
     def __init__(self, command: str) -> None:
         super().__init__(f"Exception: Command '{command}' not found.")
+
+
+class GeminiModelNotFoundException(Exception):
+    def __init__(self, model: str) -> None:
+        super().__init__(
+            f"Exception: Model '{model}' not found."
+            "Use command `list-models` for supported models."
+        )
 
 
 @dataclass
@@ -54,7 +63,7 @@ class GeminiClient:
         self._api_key: str = api_key
         self._client: Client | None = client
         self._commands: dict[str, GeminiCommand] = {}
-        self._config_path = Path(__file__).parent / "config.json"
+        self._config_path = Path(__file__).parent / "commands.json"
         self._default_model: str = "gemini-2.0-flash"
 
     def _get_client(self) -> Client:
@@ -62,6 +71,20 @@ class GeminiClient:
         if not self._client:
             self._client = Client(api_key=self._api_key)
         return self._client
+
+    def list_supported_models(self) -> list[str]:
+        client = self._get_client()
+        model_names = [
+            getattr(model, "name", "").lstrip("models/")
+            for model in client.models.list()
+            if model.supported_actions
+            and "generateContent" in model.supported_actions
+        ]
+        return model_names
+
+    def _validate_model(self, model: str) -> None:
+        if model not in self.list_supported_models():
+            raise GeminiModelNotFoundException(model=model)
 
     def load_commands(self) -> None:
         if not self._config_path.is_file():
@@ -83,6 +106,9 @@ class GeminiClient:
     def register_command(
         self, command: str, model: str | None, system_instructions: str | None
     ) -> None:
+        if model:
+            self._validate_model(model)
+
         self._commands[command] = GeminiCommand(
             command=command,
             model=model or self._default_model,
@@ -125,16 +151,27 @@ def read_input() -> str:
 
 
 app = typer.Typer()
-client = GeminiClient(api_key=GOOGLE_GEMINI_API_TOKEN)
-client.load_commands()
+
+
+def get_client() -> GeminiClient:
+    client = GeminiClient(api_key=GOOGLE_GEMINI_API_TOKEN)
+    client.load_commands()
+    return client
 
 
 @app.command()
-def run(command: str, content: str) -> None:
+def run(command: str, content: str = typer.Argument(default=None)) -> None:
     if content is None:
         content = read_input()
 
-    result = client.generate(command=command, content=content)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        progress.add_task(description="Thinking...", total=None)
+        client = get_client()
+        result = client.generate(command=command, content=content)
     print(result)
 
 
@@ -144,6 +181,7 @@ def register(
     model: str | None = None,
     instructions: str | None = None,
 ) -> None:
+    client = get_client()
     client.register_command(
         command=command, model=model, system_instructions=instructions
     )
@@ -151,13 +189,20 @@ def register(
 
 
 @app.command()
-def commands(verbose: Annotated[bool, typer.Option()] = False) -> None:
+def list_commands(verbose: Annotated[bool, typer.Option()] = False) -> None:
+    client = get_client()
     commands = client.list_commands()
     if verbose:
         print(json.dumps(commands, indent=4))
     else:
         command_names = [command["command"] for command in commands]
         print(json.dumps(command_names, indent=4))
+
+
+@app.command()
+def list_models() -> None:
+    client = get_client()
+    print(json.dumps(client.list_supported_models(), indent=4))
 
 
 if __name__ == "__main__":

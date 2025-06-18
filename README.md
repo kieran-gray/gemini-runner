@@ -43,7 +43,7 @@ Options (not required)
 For example:
 
 ```
-uv run gemini_runner.py register kitty --instructions "Pretend that you are a cat. Only answer with 'meow'."
+uv run gemini_runner.py register kitty --model gemini-2.5-pro-preview-06-05 --instructions "Pretend that you are a cat. Only answer with 'meow'."
 ```
 
 ### Run a command
@@ -61,7 +61,7 @@ uv run gemini_runner.py run kitty "Tell me something profound"
 
 ### List available commands:
 
-* `commands`
+* `list-commands`
 
 Flags
 
@@ -70,7 +70,17 @@ Flags
 For example:
 
 ```
-uv run gemini_runner.py commands
+uv run gemini_runner.py list-commands
+```
+
+### List available models:
+
+* `list-models`
+
+For example:
+
+```
+uv run gemini_runner.py list-models
 ```
 
 
